@@ -1,0 +1,151 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\title{An Empirical Comparison of Knowledge-Distillation Objectives\\for Compressing a Pretrained Language Model}
+\author{Tate Staples\thanks{Experiments, implementation, and drafting assisted by Claude (Anthropic).}}
+\date{July 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Knowledge distillation (KD) transfers the behavior of a large ``teacher''
+language model into a smaller ``student.'' The literature offers many
+objectives---forward and reverse Kullback--Leibler divergence on output
+logits, symmetric divergences such as the generalized Jensen--Shannon
+divergence and total variation distance, intermediate-representation
+matching, and sequence-level distillation on teacher-generated text---but
+few controlled comparisons at small scale. We distill the pretrained
+GPT-2 (124M parameters) into a 29M-parameter, 4-layer student under an
+equal step budget for seven objectives, evaluating WikiText-2 perplexity,
+LAMBADA final-word accuracy, and HellaSwag and ARC-Easy multiple-choice
+accuracy. We additionally investigate an auxiliary
+representation-alignment target motivated by a user-supplied reference to
+an Anthropic ``J-Space'' paper; we document that no such paper exists in
+the public record and instead evaluate the closest defensible
+interpretation. \textbf{[RESULTS SUMMARY TO BE FILLED FROM
+runs/summary.json]}
+\end{abstract}
+
+\section{Introduction}
+Large language models are expensive to serve; distillation
+\cite{hinton2015distilling} compresses them by training a small student
+to imitate a large teacher rather than only the raw data. Since Hinton
+et al.'s original formulation, the field has produced a family of
+objectives that differ chiefly in (i) \emph{what} is matched (output
+distributions, intermediate states, or generated sequences) and (ii)
+\emph{which divergence} measures the mismatch. This paper implements the
+most common objectives in a single controlled harness and compares them
+when distilling a pretrained GPT-2 teacher on a fixed compute budget.
+
+\section{Methods}
+\label{sec:methods}
+Let $p(\cdot \mid x)$ be the teacher's next-token distribution and
+$q_\theta(\cdot \mid x)$ the student's. All students share one
+architecture, initialization, optimizer, and step budget; only the loss
+differs.
+
+\paragraph{Hard-label baseline (\texttt{hard}).}
+Standard next-token cross-entropy on the data,
+$\mathcal{L}_{\mathrm{CE}} = -\log q_\theta(y_t \mid x_{<t})$,
+with no teacher involvement.
+
+\paragraph{Forward-KL logit distillation (\texttt{kd}).}
+The classic objective \cite{hinton2015distilling}: with temperature $T$
+and mixing weight $\alpha$,
+\begin{equation}
+\mathcal{L} = \alpha\,\mathcal{L}_{\mathrm{CE}}
+ + (1-\alpha)\,T^2\,\mathrm{KL}\!\left(p^{1/T} \,\|\, q_\theta^{1/T}\right),
+\end{equation}
+where $p^{1/T}$ denotes the temperature-flattened distribution. Forward
+KL is \emph{mass-covering}: the student is penalized wherever the teacher
+assigns probability the student misses.
+
+\paragraph{Reverse-KL distillation (\texttt{rkl}).}
+$\mathrm{KL}(q_\theta \,\|\, p)$ is \emph{mode-seeking} and was argued by
+MiniLLM \cite{gu2024minillm} to suit generative students that cannot
+cover every teacher mode. We use the teacher-forced variant (computed on
+data prefixes rather than on-policy student rollouts) to keep the
+comparison budget-matched.
+
+\paragraph{Generalized Jensen--Shannon divergence (\texttt{jsd}).}
+Following GKD \cite{agarwal2024gkd},
+$\mathrm{JSD}_\beta(p, q) = \beta\,\mathrm{KL}(p\|m) +
+(1-\beta)\,\mathrm{KL}(q\|m)$ with $m = \beta p + (1-\beta) q$;
+$\beta{=}0.5$ gives the symmetric JSD, and the family interpolates
+between forward ($\beta\!\to\!1$) and reverse ($\beta\!\to\!0$) KL.
+
+\paragraph{Total variation distance (\texttt{tvd}).}
+$\tfrac12 \sum_v |p_v - q_v|$, a bounded symmetric alternative studied in
+f-divergence distillation \cite{wen2023fdivergence}.
+
+\paragraph{Hidden-state matching (\texttt{hidden}).}
+TinyBERT/DistilBERT-style \cite{jiao2020tinybert,sanh2019distilbert}
+intermediate-layer transfer: each student layer $s$ is mapped to teacher
+layer $t(s)$ (uniform spacing), a learned linear projection lifts the
+student width (384) to the teacher width (768), and a scale-normalized
+MSE between projected student and teacher states is added to the
+forward-KL objective.
+
+\paragraph{Sequence-level KD (\texttt{seqkd}).}
+Kim \& Rush \cite{kim2016sequence}: the teacher generates full sequences
+(here, sampled completions of 16-token WikiText-2 prompts,
+top-$k{=}50$), and the student trains with plain cross-entropy on this
+synthetic corpus.
+
+\paragraph{J-space auxiliary target (\texttt{jspace}).}
+\textbf{[TO BE WRITTEN AFTER RESEARCH: what was found about the claimed
+Anthropic paper, the chosen interpretation, and its formula.]}
+
+\section{Experimental Setup}
+\label{sec:setup}
+\textbf{Teacher.} GPT-2 124M (12 layers, 768-dim), pretrained weights in
+HF format.\footnote{Weights obtained from the legacy Hugging Face S3
+mirror; the experiment environment blocks huggingface.co.}
+\textbf{Student.} 4 layers, 384-dim, 6 heads, GPT-2 BPE vocabulary
+(50{,}257), $\sim$29M parameters ($\sim$23\% of teacher), randomly
+initialized, identical seed across methods.
+\textbf{Data.} WikiText-2 (word-level release), packed into 128-token
+blocks; 4{,}000 training blocks.
+\textbf{Optimization.} AdamW, lr $3\times10^{-4}$ with linear warmup
+(5\%) and linear decay, weight decay 0.01, gradient clipping 1.0,
+batch size 8, 600 steps ($\approx$0.6M training tokens), $T{=}2$,
+$\alpha{=}0.5$. Single seed (compute-constrained; CPU-only).
+\textbf{Evaluation.} WikiText-2 test perplexity on 200 held-out blocks;
+LAMBADA final-word greedy accuracy (300 examples); HellaSwag and
+ARC-Easy accuracy via length-normalized log-likelihood over answer
+choices (300 examples each).
+
+\section{Results}
+\label{sec:results}
+\textbf{[TABLE + ANALYSIS TO BE FILLED FROM runs/summary.json]}
+
+\section{Discussion and Limitations}
+\textbf{[TO BE WRITTEN: interpretation, capacity-gap notes, small-budget
+caveats, single-seed caveat, teacher-forced rkl caveat.]}
+
+\begin{thebibliography}{10}
+\bibitem{hinton2015distilling} G.~Hinton, O.~Vinyals, J.~Dean.
+Distilling the knowledge in a neural network. \emph{arXiv:1503.02531}, 2015.
+\bibitem{kim2016sequence} Y.~Kim, A.~Rush. Sequence-level knowledge
+distillation. \emph{EMNLP}, 2016.
+\bibitem{sanh2019distilbert} V.~Sanh, L.~Debut, J.~Chaumond, T.~Wolf.
+DistilBERT, a distilled version of BERT. \emph{arXiv:1910.01108}, 2019.
+\bibitem{jiao2020tinybert} X.~Jiao et al. TinyBERT: Distilling BERT for
+natural language understanding. \emph{Findings of EMNLP}, 2020.
+\bibitem{gu2024minillm} Y.~Gu, L.~Dong, F.~Wei, M.~Huang. MiniLLM:
+Knowledge distillation of large language models. \emph{ICLR}, 2024.
+\bibitem{agarwal2024gkd} R.~Agarwal et al. On-policy distillation of
+language models: Learning from self-generated mistakes. \emph{ICLR}, 2024.
+\bibitem{wen2023fdivergence} Y.~Wen, Z.~Li, W.~Du, L.~Mou.
+f-divergence minimization for sequence-level knowledge distillation.
+\emph{ACL}, 2023.
+\end{thebibliography}
+
+\end{document}
