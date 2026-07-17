@@ -1,0 +1,14 @@
+# large artifacts — reproduce with fetch_data.sh / run_experiments.py
+models/
+data/
+runs/*/student/
+runs/seqkd_corpus_*.pt
+runs_log.txt
+__pycache__/
+*.pyc
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.synctex.gz
