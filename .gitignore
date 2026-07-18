@@ -5,6 +5,8 @@ runs/*/student/
 runs/*/ckpt.pt
 runs/seqkd_corpus_*.pt
 runs/jacobian_lens.pt*
+runs2/*_ckpt.pt
+runs2/*_final.pt
 runs_log.txt
 __pycache__/
 *.pyc
