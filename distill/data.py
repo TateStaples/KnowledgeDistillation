@@ -47,12 +47,18 @@ def generate_seqkd_corpus(
     batch_size: int = 16,
     temperature: float = 1.0,
     device: str = "cpu",
+    ckpt_path: str | None = None,
+    log_fn=print,
 ) -> torch.Tensor:
     """Sequence-level KD corpus (Kim & Rush 2016): condition on short prompts from
     the real data and let the teacher complete them; train the student with CE on
     the teacher's outputs. Returns (n, block_size) token ids."""
-    out = []
-    for i in range(0, prompts.size(0), batch_size):
+    out, start = [], 0
+    if ckpt_path is not None and os.path.exists(ckpt_path):
+        done = torch.load(ckpt_path, weights_only=True)
+        out, start = [done], done.size(0)
+        log_fn(f"[seqkd] resumed corpus generation at {start}/{prompts.size(0)}")
+    for i in range(start, prompts.size(0), batch_size):
         batch = prompts[i : i + batch_size, :prompt_len].to(device)
         gen = teacher.generate(
             batch,
@@ -69,4 +75,7 @@ def generate_seqkd_corpus(
             )
             gen = torch.cat([gen.cpu(), pad], dim=1)
         out.append(gen[:, :block_size].cpu())
+        if ckpt_path is not None:
+            torch.save(torch.cat(out, dim=0), ckpt_path + ".tmp")
+            os.replace(ckpt_path + ".tmp", ckpt_path)
     return torch.cat(out, dim=0)

@@ -97,8 +97,11 @@ def main():
                 print(f"fitting Jacobian lens at teacher layers {args.jspace_layers}...")
                 t0 = time.time()
                 jac = fit_jacobian_lens(teacher, train_blocks, args.jspace_layers,
-                                        n_prompts=args.jspace_prompts, device=device)
+                                        n_prompts=args.jspace_prompts, device=device,
+                                        ckpt_path=lens_path + ".fit")
                 save_lens(lens_path, jac, args.jspace_prompts)
+                if os.path.exists(lens_path + ".fit"):
+                    os.remove(lens_path + ".fit")
                 print(f"lens fitted in {time.time()-t0:.0f}s -> {lens_path}")
             jspace_bases = jspace_basis(jac, k=args.jspace_k)
         if method == "seqkd":
@@ -111,8 +114,11 @@ def main():
                     t0 = time.time()
                     seqkd_corpus = generate_seqkd_corpus(
                         teacher, tok, train_blocks[: args.seqkd_sequences],
-                        block_size=args.block_size, device=device)
+                        block_size=args.block_size, device=device,
+                        ckpt_path=corpus_path + ".gen")
                     torch.save(seqkd_corpus, corpus_path)
+                    if os.path.exists(corpus_path + ".gen"):
+                        os.remove(corpus_path + ".gen")
                     print(f"corpus {tuple(seqkd_corpus.shape)} in {time.time()-t0:.0f}s")
             blocks = seqkd_corpus
 
@@ -128,6 +134,7 @@ def main():
             batch_size=args.batch_size, lr=args.lr, temperature=args.temperature,
             alpha=args.alpha, jspace_weight=args.jspace_weight,
             jspace_bases=jspace_bases, device=device, log_fn=log_fn,
+            ckpt_path=os.path.join(run_dir, "ckpt.pt"),
         )
         train_seconds = time.time() - t0
 
@@ -136,6 +143,9 @@ def main():
         metrics = evaluate_all(student, tok, eval_blocks, args.eval_examples, device)
         print(json.dumps(metrics, indent=2))
 
+        ckpt = os.path.join(run_dir, "ckpt.pt")
+        if os.path.exists(ckpt):
+            os.remove(ckpt)
         student.save_pretrained(os.path.join(run_dir, "student"))
         with open(os.path.join(run_dir, "train_log.txt"), "w") as f:
             f.write("\n".join(log_lines))

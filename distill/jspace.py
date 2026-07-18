@@ -23,6 +23,7 @@ rather than its full residual stream.
 from __future__ import annotations
 
 import math
+import os
 import time
 
 import torch
@@ -39,6 +40,7 @@ def fit_jacobian_lens(
     n_prompts: int = 32,
     device: str = "cpu",
     log_fn=print,
+    ckpt_path: str | None = None,
 ) -> dict[int, torch.Tensor]:
     """Estimate J_l (shape [d_model, d_model], output-dim x source-dim) for each
     source layer. `blocks` are token-id blocks (n, T); the first `n_prompts`
@@ -49,8 +51,14 @@ def fit_jacobian_lens(
     n_layers = teacher.config.n_layer
     assert all(0 < l < n_layers for l in source_layers)
     jacobians = {l: torch.zeros(d, d) for l in source_layers}
+    start_prompt = 0
+    if ckpt_path is not None and os.path.exists(ckpt_path):
+        ck = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+        jacobians = {l: J.clone() for l, J in ck["partial"].items()}
+        start_prompt = ck["prompt"]
+        log_fn(f"[jlens] resumed fit at prompt {start_prompt}/{n_prompts}")
     t0 = time.time()
-    for pi in range(n_prompts):
+    for pi in range(start_prompt, n_prompts):
         ids = blocks[pi : pi + 1, :].to(device)
         T = ids.size(1)
         mask = torch.zeros(T, dtype=torch.bool)
@@ -78,9 +86,12 @@ def fit_jacobian_lens(
                 # target positions >= p; average over valid source positions
                 rows = g[: len(dims)][:, mask, :].mean(dim=1)
                 jacobians[l][dims, :] += rows.detach().cpu()
-        if (pi + 1) % 4 == 0:
+        if (pi + 1) % 2 == 0:
             log_fn(f"[jlens] prompt {pi+1}/{n_prompts} "
-                   f"({(time.time()-t0)/(pi+1):.1f}s/prompt)")
+                   f"({(time.time()-t0)/(pi+1-start_prompt):.1f}s/prompt)")
+        if ckpt_path is not None:
+            torch.save({"partial": jacobians, "prompt": pi + 1}, ckpt_path + ".tmp")
+            os.replace(ckpt_path + ".tmp", ckpt_path)
     for l in source_layers:
         jacobians[l] /= n_prompts
     return jacobians

@@ -1,6 +1,7 @@
 """Training loop for the distillation objectives."""
 from __future__ import annotations
 
+import os
 import time
 
 import torch
@@ -40,6 +41,8 @@ def train_student(
     device: str = "cpu",
     log_every: int = 50,
     log_fn=print,
+    ckpt_path: str | None = None,
+    ckpt_every: int = 50,
 ):
     """Train `student` with the given objective.
 
@@ -86,7 +89,34 @@ def train_student(
     n = train_blocks.size(0)
     g = torch.Generator().manual_seed(1234)
     history, t0 = [], time.time()
-    for step in range(steps):
+    start_step = 0
+    if ckpt_path is not None and os.path.exists(ckpt_path):
+        ck = torch.load(ckpt_path, map_location=device, weights_only=False)
+        student.load_state_dict(ck["student"])
+        if projections is not None and ck.get("projections") is not None:
+            projections.load_state_dict(ck["projections"])
+        opt.load_state_dict(ck["opt"])
+        sched.load_state_dict(ck["sched"])
+        g.set_state(ck["gen"])
+        history = ck["history"]
+        start_step = ck["step"]
+        log_fn(f"[{method}] resumed from checkpoint at step {start_step}")
+
+    def _save_ckpt(step):
+        if ckpt_path is None:
+            return
+        torch.save({
+            "step": step,
+            "student": student.state_dict(),
+            "projections": projections.state_dict() if projections is not None else None,
+            "opt": opt.state_dict(),
+            "sched": sched.state_dict(),
+            "gen": g.get_state(),
+            "history": history,
+        }, ckpt_path + ".tmp")
+        os.replace(ckpt_path + ".tmp", ckpt_path)
+
+    for step in range(start_step, steps):
         idx = torch.randint(0, n, (batch_size,), generator=g)
         ids = train_blocks[idx].to(device)
         inputs, labels = ids[:, :-1], ids[:, 1:]
@@ -135,6 +165,8 @@ def train_student(
             history.append({"step": step + 1, "loss": loss.item(), "ce": loss_ce.item()})
             log_fn(
                 f"[{method}] step {step+1}/{steps} loss={loss.item():.4f} "
-                f"ce={loss_ce.item():.4f} ({(time.time()-t0)/(step+1):.2f}s/step)"
+                f"ce={loss_ce.item():.4f} ({(time.time()-t0)/(step+1-start_step):.2f}s/step)"
             )
+        if (step + 1) % ckpt_every == 0 and step + 1 < steps:
+            _save_ckpt(step + 1)
     return history
