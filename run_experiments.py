@@ -33,6 +33,10 @@ def main():
     ap.add_argument("--temperature", type=float, default=2.0)
     ap.add_argument("--alpha", type=float, default=0.5)
     ap.add_argument("--seqkd-sequences", type=int, default=1200)
+    ap.add_argument("--jspace-weight", type=float, default=1.0)
+    ap.add_argument("--jspace-k", type=int, default=64)
+    ap.add_argument("--jspace-layers", type=int, nargs="+", default=[3, 6, 9])
+    ap.add_argument("--jspace-prompts", type=int, default=32)
     ap.add_argument("--eval-examples", type=int, default=300)
     ap.add_argument("--max-eval-blocks", type=int, default=200)
     ap.add_argument("--eval-teacher", action="store_true")
@@ -81,6 +85,22 @@ def main():
         student = build_student(teacher=teacher, device=device)
 
         blocks = train_blocks
+        jspace_bases = None
+        if method == "jspace":
+            from distill.jspace import fit_jacobian_lens, jspace_basis, load_lens, save_lens
+
+            lens_path = os.path.join(args.out, "jacobian_lens.pt")
+            if os.path.exists(lens_path):
+                jac = load_lens(lens_path)
+                print(f"loaded Jacobian lens from {lens_path}")
+            else:
+                print(f"fitting Jacobian lens at teacher layers {args.jspace_layers}...")
+                t0 = time.time()
+                jac = fit_jacobian_lens(teacher, train_blocks, args.jspace_layers,
+                                        n_prompts=args.jspace_prompts, device=device)
+                save_lens(lens_path, jac, args.jspace_prompts)
+                print(f"lens fitted in {time.time()-t0:.0f}s -> {lens_path}")
+            jspace_bases = jspace_basis(jac, k=args.jspace_k)
         if method == "seqkd":
             corpus_path = os.path.join(args.out, f"seqkd_corpus_{args.seqkd_sequences}.pt")
             if seqkd_corpus is None:
@@ -106,7 +126,8 @@ def main():
         history = train_student(
             student, teacher, blocks, method=method, steps=args.steps,
             batch_size=args.batch_size, lr=args.lr, temperature=args.temperature,
-            alpha=args.alpha, device=device, log_fn=log_fn,
+            alpha=args.alpha, jspace_weight=args.jspace_weight,
+            jspace_bases=jspace_bases, device=device, log_fn=log_fn,
         )
         train_seconds = time.time() - t0
 

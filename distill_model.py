@@ -63,6 +63,19 @@ def main():
 
     train_blocks = load_wikitext_blocks(tok, "train", args.block_size,
                                         args.max_train_blocks, args.seed)
+    jspace_bases = None
+    if args.method == "jspace":
+        from distill.jspace import fit_jacobian_lens, jspace_basis, load_lens, save_lens
+
+        lens_path = os.path.join("runs", "jacobian_lens.pt")
+        if os.path.exists(lens_path):
+            jac = load_lens(lens_path)
+        else:
+            print("fitting Jacobian lens at teacher layers [3, 6, 9]...")
+            os.makedirs("runs", exist_ok=True)
+            jac = fit_jacobian_lens(teacher, train_blocks, [3, 6, 9], device=device)
+            save_lens(lens_path, jac, 32)
+        jspace_bases = jspace_basis(jac, k=64)
     if args.method == "seqkd":
         corpus_path = os.path.join("runs", f"seqkd_corpus_{args.seqkd_sequences}.pt")
         if os.path.exists(corpus_path):
@@ -90,7 +103,7 @@ def main():
             method=args.method, steps=args.steps, batch_size=args.batch_size,
             lr=args.lr, temperature=args.temperature, alpha=args.alpha,
             jsd_beta=args.jsd_beta, hidden_weight=args.hidden_weight,
-            jspace_weight=args.jspace_weight,
+            jspace_weight=args.jspace_weight, jspace_bases=jspace_bases,
             device=device, log_fn=log_fn,
         )
 

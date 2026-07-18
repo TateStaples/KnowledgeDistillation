@@ -28,6 +28,7 @@ def train_student(
     teacher,
     train_blocks: torch.Tensor,
     method: str = "kd",
+    jspace_bases: dict | None = None,
     steps: int = 800,
     batch_size: int = 8,
     lr: float = 3e-4,
@@ -50,18 +51,30 @@ def train_student(
       tvd    : alpha*CE + (1-alpha)*total variation distance.
       hidden : kd + hidden_weight * hidden-state MSE (TinyBERT-style).
       seqkd  : CE on teacher-generated corpus (pass that corpus as train_blocks).
+      jspace : kd + jspace_weight * J-space emulation loss (match teacher hidden
+               states only inside the Jacobian-lens top-k subspace at mapped
+               layers; requires jspace_bases from distill.jspace).
     """
     student.train()
     need_teacher = method not in ("hard", "seqkd")
-    need_hidden = method == "hidden"
+    need_hidden = method in ("hidden", "jspace")
 
     projections = None
     params = list(student.parameters())
     if need_hidden:
-        # map student layers 1..n_layer (hidden_states index, 0 = embeddings) to
-        # evenly spaced teacher layers, including the last.
         n_s, n_t = student.config.n_layer, teacher.config.n_layer
-        layer_map = [(i + 1, (i + 1) * n_t // n_s) for i in range(n_s)]
+        if method == "jspace":
+            if not jspace_bases:
+                raise ValueError("method 'jspace' requires jspace_bases")
+            # map student layers onto the teacher layers the lens was fitted at
+            t_layers = sorted(jspace_bases)
+            s_layers = [round((i + 1) * n_s / (len(t_layers) + 1)) for i in range(len(t_layers))]
+            layer_map = list(zip(s_layers, t_layers))
+            jspace_bases = {l: b.to(device) for l, b in jspace_bases.items()}
+        else:
+            # map student layers 1..n_layer (hidden_states index, 0 = embeddings)
+            # to evenly spaced teacher layers, including the last.
+            layer_map = [(i + 1, (i + 1) * n_t // n_s) for i in range(n_s)]
         projections = torch.nn.ModuleList(
             [torch.nn.Linear(student.config.n_embd, teacher.config.n_embd) for _ in layer_map]
         ).to(device)
@@ -100,6 +113,13 @@ def train_student(
                     layer_map, projections, mask,
                 )
                 loss = alpha * loss_ce + (1 - alpha) * loss_kd + hidden_weight * loss_h
+            elif method == "jspace":
+                loss_kd = losses.forward_kl_loss(s_logits, t_logits, mask, temperature)
+                loss_j = losses.jspace_loss(
+                    s_out.hidden_states, t_out.hidden_states,
+                    layer_map, projections, jspace_bases, mask,
+                )
+                loss = alpha * loss_ce + (1 - alpha) * loss_kd + jspace_weight * loss_j
             else:
                 raise ValueError(method)
         else:

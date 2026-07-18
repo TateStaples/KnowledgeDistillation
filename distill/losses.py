@@ -89,6 +89,35 @@ def tvd_loss(
     return _masked_mean(per_pos, mask)
 
 
+def jspace_loss(
+    student_hidden: list[torch.Tensor],
+    teacher_hidden: list[torch.Tensor],
+    layer_map: list[tuple[int, int]],
+    projections: torch.nn.ModuleList,
+    bases: dict[int, torch.Tensor],
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    """J-space emulation loss: like hidden_state_loss, but the mismatch is
+    measured only inside the teacher's J-space at each mapped teacher layer —
+    the top-k right-singular subspace of the Jacobian lens J_l (the
+    "verbalizable workspace" directions), rather than the full residual stream.
+
+    `bases[t_idx]` is the [d_teacher, k] orthonormal J-space basis for teacher
+    layer t_idx (see distill.jspace).
+    """
+    total = 0.0
+    m = mask.unsqueeze(-1)
+    for i, (s_idx, t_idx) in enumerate(layer_map):
+        V = bases[t_idx]  # [d_t, k]
+        s = projections[i](student_hidden[s_idx])
+        tgt = teacher_hidden[t_idx]
+        s_c, t_c = s @ V, tgt @ V  # J-space coordinates [B, T, k]
+        scale = (t_c**2).mean().detach().clamp(min=1e-6)
+        per = ((s_c - t_c) ** 2).mean(-1, keepdim=True) / scale
+        total = total + (per * m).sum() / m.sum().clamp(min=1)
+    return total / max(len(layer_map), 1)
+
+
 def hidden_state_loss(
     student_hidden: list[torch.Tensor],
     teacher_hidden: list[torch.Tensor],
