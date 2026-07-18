@@ -2,7 +2,9 @@
 models/
 data/
 runs/*/student/
+runs/*/ckpt.pt
 runs/seqkd_corpus_*.pt
+runs/jacobian_lens.pt*
 runs_log.txt
 __pycache__/
 *.pyc

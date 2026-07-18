@@ -1,0 +1,3 @@
+[tvd] resumed from checkpoint at step 500
+[tvd] step 550/600 loss=3.2381 ce=5.9915 (2.27s/step)
+[tvd] step 600/600 loss=3.1449 ce=5.8136 (2.30s/step)

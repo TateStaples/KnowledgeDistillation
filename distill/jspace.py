@@ -47,6 +47,11 @@ def fit_jacobian_lens(
     rows are used as the fitting corpus (the reference implementation notes
     quality saturates quickly; ~100 prompts is usable, paper uses 1000)."""
     teacher.eval()
+    # the teacher is loaded with frozen parameters; autograd needs at least one
+    # tensor requiring grad to build the graph from h_l to h_final
+    frozen = [p for p in teacher.parameters() if not p.requires_grad]
+    for p in frozen:
+        p.requires_grad_(True)
     d = teacher.config.n_embd
     n_layers = teacher.config.n_layer
     assert all(0 < l < n_layers for l in source_layers)
@@ -92,6 +97,8 @@ def fit_jacobian_lens(
         if ckpt_path is not None:
             torch.save({"partial": jacobians, "prompt": pi + 1}, ckpt_path + ".tmp")
             os.replace(ckpt_path + ".tmp", ckpt_path)
+    for p in frozen:
+        p.requires_grad_(False)
     for l in source_layers:
         jacobians[l] /= n_prompts
     return jacobians

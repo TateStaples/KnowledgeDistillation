@@ -1,0 +1,4 @@
+[hidden] resumed from checkpoint at step 450
+[hidden] step 500/600 loss=4.9074 ce=6.1877 (2.25s/step)
+[hidden] step 550/600 loss=4.9181 ce=6.0419 (2.26s/step)
+[hidden] step 600/600 loss=4.6842 ce=5.9326 (2.26s/step)

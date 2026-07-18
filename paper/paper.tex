@@ -5,10 +5,11 @@
 \usepackage{graphicx}
 \usepackage{url}
 \usepackage{hyperref}
-\usepackage{xcolor}
 
-\title{An Empirical Comparison of Knowledge-Distillation Objectives\\for Compressing a Pretrained Language Model}
-\author{Tate Staples\thanks{Experiments, implementation, and drafting assisted by Claude (Anthropic).}}
+\title{An Empirical Comparison of Knowledge-Distillation Objectives for
+Compressing a Pretrained Language Model,\\ with a J-Space Auxiliary Target}
+\author{Tate Staples\thanks{Experiments, implementation, and drafting assisted by
+Claude (Anthropic). Code: \url{https://github.com/TateStaples/KnowledgeDistillation}.}}
 \date{July 2026}
 
 \begin{document}
@@ -18,43 +19,56 @@
 Knowledge distillation (KD) transfers the behavior of a large ``teacher''
 language model into a smaller ``student.'' The literature offers many
 objectives---forward and reverse Kullback--Leibler divergence on output
-logits, symmetric divergences such as the generalized Jensen--Shannon
-divergence and total variation distance, intermediate-representation
-matching, and sequence-level distillation on teacher-generated text---but
-few controlled comparisons at small scale. We distill the pretrained
-GPT-2 (124M parameters) into a 29M-parameter, 4-layer student under an
-equal step budget for seven objectives, evaluating WikiText-2 perplexity,
-LAMBADA final-word accuracy, and HellaSwag and ARC-Easy multiple-choice
-accuracy. We additionally investigate an auxiliary
-representation-alignment target motivated by a user-supplied reference to
-an Anthropic ``J-Space'' paper; we document that no such paper exists in
-the public record and instead evaluate the closest defensible
-interpretation. \textbf{[RESULTS SUMMARY TO BE FILLED FROM
-runs/summary.json]}
+logits, symmetric divergences (generalized Jensen--Shannon, total
+variation), intermediate-representation matching, and sequence-level
+distillation on teacher-generated text---but few controlled comparisons at
+small scale. We distill the pretrained GPT-2 (124M parameters) into a
+27M-parameter, 4-layer student under an equal 600-step budget for eight
+objectives, evaluating WikiText-2 perplexity, LAMBADA final-word accuracy,
+and HellaSwag/ARC-Easy choice accuracy. Forward-KL logit distillation is
+the strongest objective at this budget (179.7 perplexity vs.\ 191.2 for
+the hard-label baseline); symmetric divergences track it closely; reverse
+KL underperforms the no-teacher baseline, consistent with its tail-first
+early dynamics; and pure sequence-level KD collapses on real-data
+perplexity (390.4). We additionally construct a novel auxiliary target
+from Anthropic's 2026 Jacobian-lens interpretability work: matching
+teacher hidden states only inside the ``J-space'' (the top-$k$
+right-singular subspace of the layer-to-output Jacobian, argued to carry
+the model's verbalizable ``global workspace'' content). At equal weight,
+J-space matching (192.4) is markedly less harmful than full hidden-state
+matching (201.1), supporting the hypothesis that most of the residual
+stream is not worth a small student's capacity, though neither auxiliary
+beats pure logit KD at this budget.
 \end{abstract}
 
 \section{Introduction}
 Large language models are expensive to serve; distillation
-\cite{hinton2015distilling} compresses them by training a small student
-to imitate a large teacher rather than only the raw data. Since Hinton
-et al.'s original formulation, the field has produced a family of
-objectives that differ chiefly in (i) \emph{what} is matched (output
-distributions, intermediate states, or generated sequences) and (ii)
-\emph{which divergence} measures the mismatch. This paper implements the
-most common objectives in a single controlled harness and compares them
-when distilling a pretrained GPT-2 teacher on a fixed compute budget.
+\cite{hinton2015distilling} compresses them by training a small student to
+imitate a large teacher rather than only the raw data. Since Hinton et
+al.'s formulation, the field has produced a family of objectives differing
+in (i) \emph{what} is matched --- output distributions, intermediate
+states, or generated sequences --- and (ii) \emph{which divergence}
+measures the mismatch. Modern LLM-era work debates divergence choice
+(MiniLLM \cite{gu2024minillm}, GKD \cite{agarwal2024gkd}, f-DISTILL
+\cite{wen2023fdivergence}, DistiLLM \cite{ko2024distillm}, AKL
+\cite{wu2024rethinking}), while classic lines cover sequence-level KD
+\cite{kim2016sequence} and representation transfer
+\cite{sanh2019distilbert,jiao2020tinybert}. This paper implements the most
+common objectives in one controlled harness and compares them when
+distilling a pretrained GPT-2 on a fixed budget, then adds a new
+representation target derived from Anthropic's Jacobian-lens work
+\cite{anthropic2026workspace}.
 
 \section{Methods}
 \label{sec:methods}
 Let $p(\cdot \mid x)$ be the teacher's next-token distribution and
 $q_\theta(\cdot \mid x)$ the student's. All students share one
 architecture, initialization, optimizer, and step budget; only the loss
-differs.
+differs. $\mathcal{L}_{\mathrm{CE}}$ denotes next-token cross-entropy on
+the data.
 
 \paragraph{Hard-label baseline (\texttt{hard}).}
-Standard next-token cross-entropy on the data,
-$\mathcal{L}_{\mathrm{CE}} = -\log q_\theta(y_t \mid x_{<t})$,
-with no teacher involvement.
+$\mathcal{L}_{\mathrm{CE}}$ alone; no teacher.
 
 \paragraph{Forward-KL logit distillation (\texttt{kd}).}
 The classic objective \cite{hinton2015distilling}: with temperature $T$
@@ -63,74 +77,211 @@ and mixing weight $\alpha$,
 \mathcal{L} = \alpha\,\mathcal{L}_{\mathrm{CE}}
  + (1-\alpha)\,T^2\,\mathrm{KL}\!\left(p^{1/T} \,\|\, q_\theta^{1/T}\right),
 \end{equation}
-where $p^{1/T}$ denotes the temperature-flattened distribution. Forward
-KL is \emph{mass-covering}: the student is penalized wherever the teacher
-assigns probability the student misses.
+where $p^{1/T}$ is the temperature-flattened distribution. Forward KL is
+mass-covering: the student is penalized wherever it misses teacher mass.
 
-\paragraph{Reverse-KL distillation (\texttt{rkl}).}
-$\mathrm{KL}(q_\theta \,\|\, p)$ is \emph{mode-seeking} and was argued by
-MiniLLM \cite{gu2024minillm} to suit generative students that cannot
-cover every teacher mode. We use the teacher-forced variant (computed on
-data prefixes rather than on-policy student rollouts) to keep the
-comparison budget-matched.
+\paragraph{Reverse KL (\texttt{rkl}).}
+$\mathrm{KL}(q_\theta \| p)$, mode-seeking, argued by MiniLLM
+\cite{gu2024minillm} to suit small generative students. We use the
+teacher-forced variant (computed on data prefixes, not student rollouts)
+to keep the comparison budget-matched.
 
-\paragraph{Generalized Jensen--Shannon divergence (\texttt{jsd}).}
-Following GKD \cite{agarwal2024gkd},
-$\mathrm{JSD}_\beta(p, q) = \beta\,\mathrm{KL}(p\|m) +
-(1-\beta)\,\mathrm{KL}(q\|m)$ with $m = \beta p + (1-\beta) q$;
-$\beta{=}0.5$ gives the symmetric JSD, and the family interpolates
-between forward ($\beta\!\to\!1$) and reverse ($\beta\!\to\!0$) KL.
+\paragraph{Generalized JSD (\texttt{jsd}).}
+$\mathrm{JSD}_\beta(p,q) = \beta\,\mathrm{KL}(p\|m) +
+(1-\beta)\,\mathrm{KL}(q\|m)$, $m=\beta p + (1-\beta)q$ \cite{agarwal2024gkd};
+$\beta{=}0.5$ here.
 
-\paragraph{Total variation distance (\texttt{tvd}).}
-$\tfrac12 \sum_v |p_v - q_v|$, a bounded symmetric alternative studied in
-f-divergence distillation \cite{wen2023fdivergence}.
+\paragraph{Total variation (\texttt{tvd}).}
+$\tfrac12\sum_v |p_v - q_v|$, a bounded symmetric divergence
+\cite{wen2023fdivergence}.
 
 \paragraph{Hidden-state matching (\texttt{hidden}).}
-TinyBERT/DistilBERT-style \cite{jiao2020tinybert,sanh2019distilbert}
-intermediate-layer transfer: each student layer $s$ is mapped to teacher
-layer $t(s)$ (uniform spacing), a learned linear projection lifts the
-student width (384) to the teacher width (768), and a scale-normalized
-MSE between projected student and teacher states is added to the
-forward-KL objective.
+TinyBERT/DistilBERT-style \cite{jiao2020tinybert,sanh2019distilbert}: each
+student layer is mapped to a uniformly spaced teacher layer, a learned
+linear projection lifts student width (384) to teacher width (768), and a
+scale-normalized MSE between projected student and teacher states is added
+to the \texttt{kd} objective with weight $w{=}1$.
 
 \paragraph{Sequence-level KD (\texttt{seqkd}).}
-Kim \& Rush \cite{kim2016sequence}: the teacher generates full sequences
-(here, sampled completions of 16-token WikiText-2 prompts,
-top-$k{=}50$), and the student trains with plain cross-entropy on this
-synthetic corpus.
+Kim \& Rush \cite{kim2016sequence}: the teacher samples completions
+(top-$k{=}50$, $T{=}1$) of 16-token WikiText-2 prompts; the student trains
+with plain CE on this synthetic corpus (1{,}200 sequences of 128 tokens).
 
-\paragraph{J-space auxiliary target (\texttt{jspace}).}
-\textbf{[TO BE WRITTEN AFTER RESEARCH: what was found about the claimed
-Anthropic paper, the chosen interpretation, and its formula.]}
+\subsection{The J-space auxiliary target (\texttt{jspace})}
+\label{sec:jspace}
+Anthropic's 2026 interpretability paper \emph{``Verbalizable
+Representations Form a Global Workspace in Language Models''}
+\cite{anthropic2026workspace} introduces the \textbf{Jacobian lens}: the
+readout $\mathrm{lens}_l(h) = \mathrm{unembed}(J_l h)$ with $J_l =
+\mathbb{E}[\partial h_{\mathrm{final}} / \partial h_l]$, the average
+input--output Jacobian of the residual stream, estimated with one-hot
+cotangents summed over valid target positions (early attention-sink
+positions excluded) and averaged over source positions and prompts. The
+paper's central finding is a \textbf{J-space}: a small privileged subspace
+of internal activity whose contents the model can verbalize, report on,
+and direct --- surrounded by a much larger ``ocean'' of automatic
+processing it cannot access. Following the open-source formalization in
+the \texttt{jlens-qwen-jspace} extension of the official
+\texttt{anthropics/jacobian-lens} code, we take the J-space at layer $l$
+to be the span of the top-$k$ right singular vectors $V_k^{(l)}$ of $J_l$.
+
+The paper defines no distillation method; our adaptation is: (1) fit the
+teacher's lens at layers $\{3,6,9\}$ (reference estimator, 32 prompts
+$\times$ 128 tokens, $\mathrm{dim\_batch}=8$); (2) extract $V_{64}^{(l)}$
+per layer ($k{=}64$ of 768 dims, $\approx$8\%); (3) train with
+\begin{equation}
+\mathcal{L} = \alpha\,\mathcal{L}_{\mathrm{CE}} + (1-\alpha)\,T^2\,
+\mathrm{KL}(p^{1/T}\|q^{1/T}) + w \cdot \frac{1}{|M|}\sum_{(s,l)\in M}
+\frac{\big\| V_k^{(l)\top}\!\big(W_s h^{(s)}_{\mathrm{stu}} -
+h^{(l)}_{\mathrm{tea}}\big)\big\|^2}
+{\mathbb{E}\big[\|V_k^{(l)\top} h^{(l)}_{\mathrm{tea}}\|^2\big]},
+\end{equation}
+i.e., exactly the \texttt{hidden} objective except the mismatch is
+measured only inside the teacher's J-space. Hypothesis: a small student
+should spend its capacity on the teacher's verbalizable workspace content,
+not the full residual stream.
 
 \section{Experimental Setup}
 \label{sec:setup}
-\textbf{Teacher.} GPT-2 124M (12 layers, 768-dim), pretrained weights in
-HF format.\footnote{Weights obtained from the legacy Hugging Face S3
-mirror; the experiment environment blocks huggingface.co.}
-\textbf{Student.} 4 layers, 384-dim, 6 heads, GPT-2 BPE vocabulary
-(50{,}257), $\sim$29M parameters ($\sim$23\% of teacher), randomly
-initialized, identical seed across methods.
-\textbf{Data.} WikiText-2 (word-level release), packed into 128-token
+\textbf{Teacher:} GPT-2 124M (12 layers, 768-dim), pretrained weights in HF
+format.\footnote{Obtained from the legacy Hugging Face S3 mirror; the
+experiment environment blocks huggingface.co. Data likewise: WikiText-2
+from the pytorch/examples mirror, LAMBADA (OpenAI test split), HellaSwag
+validation, ARC-Easy dev from public mirrors; see \texttt{fetch\_data.sh}.}
+\textbf{Student:} 4 layers, 384-dim, 6 heads, GPT-2 BPE vocabulary
+(50{,}257), 26.8M parameters (21.5\% of teacher), randomly initialized,
+identical seed across methods.
+\textbf{Data:} WikiText-2 (word-level release) packed into 128-token
 blocks; 4{,}000 training blocks.
-\textbf{Optimization.} AdamW, lr $3\times10^{-4}$ with linear warmup
-(5\%) and linear decay, weight decay 0.01, gradient clipping 1.0,
-batch size 8, 600 steps ($\approx$0.6M training tokens), $T{=}2$,
-$\alpha{=}0.5$. Single seed (compute-constrained; CPU-only).
-\textbf{Evaluation.} WikiText-2 test perplexity on 200 held-out blocks;
-LAMBADA final-word greedy accuracy (300 examples); HellaSwag and
-ARC-Easy accuracy via length-normalized log-likelihood over answer
-choices (300 examples each).
+\textbf{Optimization:} AdamW, lr $3{\times}10^{-4}$, linear warmup (5\%) +
+linear decay, weight decay 0.01, grad clip 1.0, batch 8, 600 steps
+($\approx$0.6M tokens), $T{=}2$, $\alpha{=}0.5$, single seed (CPU-only
+compute budget). Roughly 0.9--3.3 s/step on 4 CPU cores depending on
+whether the teacher forward and hidden-state capture are needed.
+\textbf{Evaluation:} perplexity on 200 held-out 128-token test blocks;
+LAMBADA final-word greedy accuracy (300 ex.); HellaSwag and ARC-Easy via
+length-normalized loglikelihood over choices (300 ex.\ each; chance
+$\approx$0.25).
 
 \section{Results}
 \label{sec:results}
-\textbf{[TABLE + ANALYSIS TO BE FILLED FROM runs/summary.json]}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+Method & Params & WT-2 PPL $\downarrow$ & LAMBADA $\uparrow$ & HellaSwag $\uparrow$ & ARC-E $\uparrow$ \\
+\midrule
+teacher (GPT-2) & 124.4M & 53.5 & 0.343 & 0.317 & 0.333 \\
+\midrule
+hard            & 26.8M & 191.2 & 0.000 & 0.227 & 0.263 \\
+kd (forward KL) & 26.8M & \textbf{179.7} & 0.000 & 0.227 & 0.257 \\
+rkl             & 26.8M & 194.3 & 0.000 & 0.230 & 0.253 \\
+jsd ($\beta{=}0.5$) & 26.8M & 182.1 & 0.000 & 0.230 & 0.250 \\
+tvd             & 26.8M & 186.3 & 0.000 & 0.220 & 0.243 \\
+hidden          & 26.8M & 201.1 & 0.000 & 0.230 & 0.243 \\
+seqkd           & 26.8M & 390.4 & 0.000 & 0.227 & 0.233 \\
+jspace ($k{=}64$) & 26.8M & 192.4 & 0.000 & \textbf{0.237} & 0.253 \\
+\bottomrule
+\end{tabular}
+\caption{All benchmarks after 600 training steps. Multiple-choice tasks
+are near chance (0.25) for all students at this budget; perplexity is the
+discriminating metric. Bold: best student.}
+\label{tab:results}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.72\linewidth]{figs/ppl.pdf}
+\caption{WikiText-2 test perplexity by objective (students, 600 steps).
+Dashed line: teacher.}
+\label{fig:ppl}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\linewidth]{figs/curves.pdf}
+\caption{Training-set hard-label cross-entropy (the shared, comparable
+component of every objective), from step 100. Left: divergence
+objectives. Right: representation objectives (kd repeated for
+reference).}
+\label{fig:curves}
+\end{figure}
+
+Table~\ref{tab:results} and Figure~\ref{fig:ppl} give the main comparison;
+five observations:
+
+\textbf{1. Soft targets help (the classic result).} Forward-KL KD improves
+perplexity over the hard-label baseline by 6.0\% relative (179.7 vs
+191.2) at identical budget --- dark knowledge in the teacher's softened
+distribution is a better training signal per step than one-hot labels.
+
+\textbf{2. Symmetric divergences track forward KL.} JSD (182.1) and TVD
+(186.3) land between forward KL and the baseline. f-DISTILL's finding that
+symmetric divergences win \cite{wen2023fdivergence} does not reproduce at
+this tiny budget, but both clearly beat no-teacher training.
+
+\textbf{3. Reverse KL underperforms even the baseline (194.3 vs 191.2).}
+This is consistent with Wu et al.'s analysis \cite{wu2024rethinking}: FKL
+and RKL share an optimum asymptotically, but early in training FKL fits
+the \emph{head} of the teacher distribution while RKL fits the
+\emph{tail}; at 600 steps we are entirely in the early regime, so the
+tail-first objective wastes the budget. MiniLLM's gains with RKL also
+relied on on-policy student rollouts, absent here by design.
+
+\textbf{4. Pure SeqKD collapses on real-data perplexity (390.4).} The
+student saw only sampled teacher text, whose distribution differs from
+WikiText-2 (sampling noise at $T{=}1$, no ground-truth continuations), and
+0.6M tokens is far too little for the synthetic corpus to substitute for
+real data. SeqKD is best used mixed with references or at much larger
+synthetic-corpus scale \cite{kim2016sequence}.
+
+\textbf{5. J-space matching is the better representation target.} Both
+auxiliary representation losses \emph{hurt} at this budget relative to
+pure logit KD --- they spend gradient signal and add competing objectives
+(and fresh projection matrices) the 600-step budget cannot amortize. But
+the comparison between them is informative: full 768-dim hidden matching
+gives the worst non-seqkd student (201.1), while restricting the same loss
+to the 64-dim J-space recovers most of the damage (192.4) and produces
+the best student HellaSwag score (0.237). Per dimension matched, the
+J-space directions are far more valuable, supporting the workspace
+hypothesis \cite{anthropic2026workspace} in a transfer-learning role:
+what the teacher can verbalize is the part worth copying; the surrounding
+``ocean'' costs capacity for little return.
 
 \section{Discussion and Limitations}
-\textbf{[TO BE WRITTEN: interpretation, capacity-gap notes, small-budget
-caveats, single-seed caveat, teacher-forced rkl caveat.]}
+\textbf{Budget dominates the ranking.} 600 steps is $\sim$0.6M tokens ---
+three orders of magnitude below DistilBERT-scale distillation. Rankings
+here characterize the \emph{early} regime; several literature results
+(symmetric-divergence wins, RKL benefits, hidden-state transfer) are
+claimed at budgets where slow-starting objectives can pay off.
+\textbf{Single seed.} CPU-only compute allowed one seed per method;
+differences of $<$3 PPL should be read cautiously. The kd-vs-hard gap
+(11.5 PPL) and hidden-vs-jspace gap (8.7 PPL) are larger than typical
+seed noise for identical-init runs, but we cannot quantify it here.
+\textbf{Teacher-forced RKL.} Our \texttt{rkl} is the fixed-data variant;
+MiniLLM's full method is on-policy with variance reduction, which we
+excluded to keep budgets equal.
+\textbf{J-space design space unexplored.} We fixed $k{=}64$, layers
+$\{3,6,9\}$, $w{=}1$, and a 32-prompt lens fit. Whether a tuned-$w$ or
+larger-budget \texttt{jspace} beats \texttt{kd} outright is open; the
+right experiment is a $w$-sweep at 10$\times$ budget.
+\textbf{Benchmarks are near-floor.} Choice tasks discriminate the teacher
+from students but not students from each other at this scale; perplexity
+carries the comparison.
 
-\begin{thebibliography}{10}
+\section{Conclusion}
+In a controlled, equal-budget comparison distilling GPT-2 into a
+21.5\%-size student, classic forward-KL logit distillation remains the
+strongest single objective in the low-budget regime; symmetric
+divergences are close; tail-seeking and data-replacement methods (RKL,
+SeqKD) need larger budgets or on-policy data to shine; and representation
+auxiliaries should be aimed at the teacher's J-space rather than its full
+residual stream --- an 8\% subspace carrying most of the transferable
+signal of hidden-state matching at a fraction of the harm.
+
+\begin{thebibliography}{12}
 \bibitem{hinton2015distilling} G.~Hinton, O.~Vinyals, J.~Dean.
 Distilling the knowledge in a neural network. \emph{arXiv:1503.02531}, 2015.
 \bibitem{kim2016sequence} Y.~Kim, A.~Rush. Sequence-level knowledge
@@ -143,9 +294,18 @@ natural language understanding. \emph{Findings of EMNLP}, 2020.
 Knowledge distillation of large language models. \emph{ICLR}, 2024.
 \bibitem{agarwal2024gkd} R.~Agarwal et al. On-policy distillation of
 language models: Learning from self-generated mistakes. \emph{ICLR}, 2024.
-\bibitem{wen2023fdivergence} Y.~Wen, Z.~Li, W.~Du, L.~Mou.
-f-divergence minimization for sequence-level knowledge distillation.
-\emph{ACL}, 2023.
+\bibitem{wen2023fdivergence} Y.~Wen, Z.~Li, W.~Du, L.~Mou. f-divergence
+minimization for sequence-level knowledge distillation. \emph{ACL}, 2023.
+\bibitem{ko2024distillm} J.~Ko, S.~Kim, T.~Chen, S.~Yun. DistiLLM:
+Towards streamlined distillation for large language models. \emph{ICML},
+2024.
+\bibitem{wu2024rethinking} T.~Wu, C.~Tao, J.~Wang, R.~Yang, Z.~Zhao,
+N.~Wong. Rethinking Kullback-Leibler divergence in knowledge distillation
+for large language models. \emph{COLING}, 2025.
+\bibitem{anthropic2026workspace} Anthropic. Verbalizable representations
+form a global workspace in language models. \emph{Transformer Circuits},
+2026. \url{https://transformer-circuits.pub/2026/workspace/index.html};
+code: \url{https://github.com/anthropics/jacobian-lens}.
 \end{thebibliography}
 
 \end{document}

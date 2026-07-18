@@ -45,6 +45,28 @@ python run_experiments.py --steps 600 --eval-teacher \
 Results land in `runs/summary.json`; each method's training log and checkpoint in
 `runs/<method>/`.
 
+## Results (600 steps, single seed, CPU)
+
+| method | params | WT-2 ppl ↓ | LAMBADA | HellaSwag | ARC-E |
+|---|---|---|---|---|---|
+| teacher (GPT-2) | 124.4M | 53.5 | .343 | .317 | .333 |
+| hard | 26.8M | 191.2 | .000 | .227 | .263 |
+| **kd** (forward KL) | 26.8M | **179.7** | .000 | .227 | .257 |
+| rkl | 26.8M | 194.3 | .000 | .230 | .253 |
+| jsd (β=0.5) | 26.8M | 182.1 | .000 | .230 | .250 |
+| tvd | 26.8M | 186.3 | .000 | .220 | .243 |
+| hidden | 26.8M | 201.1 | .000 | .230 | .243 |
+| seqkd | 26.8M | 390.4 | .000 | .227 | .233 |
+| jspace (k=64) | 26.8M | 192.4 | .000 | **.237** | .253 |
+
+Takeaways: forward-KL logit KD wins in the low-budget regime; symmetric
+divergences (JSD/TVD) are close; reverse KL loses to the no-teacher baseline
+(tail-first early dynamics, cf. Wu et al. 2024); pure SeqKD collapses on
+real-data perplexity; and the J-space auxiliary target (matching teacher hidden
+states only in the Jacobian-lens top-64 subspace, after Anthropic's 2026
+global-workspace paper) is markedly less harmful than full hidden-state
+matching — see `paper/paper.pdf` for the full analysis.
+
 ## Tests
 
 ```bash

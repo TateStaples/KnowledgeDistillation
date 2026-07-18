@@ -1,0 +1,2 @@
+[seqkd] resumed from checkpoint at step 550
+[seqkd] step 600/600 loss=4.5507 ce=4.5507 (0.84s/step)

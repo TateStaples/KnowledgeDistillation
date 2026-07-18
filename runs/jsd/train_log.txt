@@ -1,0 +1,2 @@
+[jsd] resumed from checkpoint at step 550
+[jsd] step 600/600 loss=3.2095 ce=5.7864 (3.28s/step)

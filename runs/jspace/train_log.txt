@@ -1,0 +1,3 @@
+[jspace] resumed from checkpoint at step 500
+[jspace] step 550/600 loss=4.8258 ce=5.9814 (2.26s/step)
+[jspace] step 600/600 loss=4.6005 ce=5.8866 (2.30s/step)
